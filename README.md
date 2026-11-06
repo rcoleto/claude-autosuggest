@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".claude-plugin/icon.png" alt="autosuggest icon: a ghost with a terminal prompt" width="128" height="128">
+</p>
+
 # autosuggest
 
 Ghost-text suggestions for Claude Code, in two places:
