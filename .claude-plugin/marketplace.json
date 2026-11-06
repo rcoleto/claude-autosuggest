@@ -9,8 +9,8 @@
     {
       "name": "autosuggest",
       "source": "./",
-      "description": "Ghost-text suggestions: the likely next prompt in the empty box after each reply, and inline completion of a half-typed message after a short pause. Tab to accept.",
-      "version": "1.2.0",
+      "description": "Ghost-text suggestions: the likely next prompt after each reply (dim text in the terminal, a band with a Send button in the desktop app), and inline completion of a half-typed message in the terminal. Tab to accept.",
+      "version": "1.3.0",
       "category": "productivity",
       "keywords": [
         "autocomplete",

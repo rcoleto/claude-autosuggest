@@ -1,4 +1,14 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptDecoration, Register } from 'claude-code'
+
+import type { BandSuggestion } from '../types'
+
+/**
+ * Where Claude Code has no prompt box of its own to put ghost text in (the
+ * desktop app draws its own box), the next-prompt suggestion goes in a band
+ * above the prompt instead, with a button to send it.
+ */
+const band = atom({ plugin: 'autosuggest', key: 'band' } as const, null as BandSuggestion)
 
 // ---------------------------------------------------------------------------
 // Settings (kept in $.store, so they survive restarts)
@@ -224,7 +234,7 @@ export const register: Register = on => {
   // Bumped on every prompt sent, so a next-prompt suggestion made for an older
   // turn is dropped.
   let generation = 0
-  // Headless runs (claude -p, the SDK) have no prompt box: skip the paid fork.
+  // A terminal session: Claude Code draws the prompt box itself.
   let isInteractive = true
   // Guards against a fork's own completion re-entering turn.complete.
   let isForkingNext = false
@@ -266,7 +276,10 @@ export const register: Register = on => {
 
     if ((first === 'on' || first === 'off') && second === undefined) {
       await $.store.set(ENABLED_KEY, first === 'on')
-      if (first === 'off') forget()
+      if (first === 'off') {
+        forget()
+        await update($, band, () => null)
+      }
       return { text: `Autosuggest ${first}.` }
     }
 
@@ -274,6 +287,7 @@ export const register: Register = on => {
       await $.store.set(first === 'next' ? NEXT_KEY : INLINE_KEY, second === 'on')
       if (second === 'on') await $.store.set(ENABLED_KEY, true)
       if (first === 'inline' && second === 'off') forget()
+      if (first === 'next' && second === 'off') await update($, band, () => null)
       const what = first === 'next' ? 'Next-prompt suggestions' : 'Inline completion'
       return { text: `${what} ${second}.` }
     }
@@ -291,7 +305,8 @@ export const register: Register = on => {
 
   // ---- Next-prompt suggestion (empty box, after a reply) -----------------
 
-  on('prompt.submit', ($, e, next) => {
+  on('prompt.submit', async ($, e, next) => {
+    await update($, band, () => null)
     lastPrompt = e.text
     generation += 1
     forget()
@@ -311,7 +326,10 @@ export const register: Register = on => {
     const result = await next(e)
     // Main loop only, only after a real answer, only where a box can show it.
     if (e.agentId !== undefined || e.reason !== 'answer') return result
-    if (!isInteractive || isForkingNext || !(await isOn($, NEXT_KEY))) return result
+    if (isForkingNext || !(await isOn($, NEXT_KEY))) return result
+    // Nobody to show it to (claude -p, an SDK run with no app attached): skip
+    // the paid request. The terminal, or an app such as the desktop one, counts.
+    if (!isInteractive && (await $.session.surfaces()).length === 0) return result
 
     const mine = ++generation
     // Fire and forget: the box only shows a suggestion once the turn is over.
@@ -321,7 +339,10 @@ export const register: Register = on => {
         const reply = await $.model.fork({ prompt: ASK_NEXT })
         if (mine !== generation || !reply.isAnswered) return
         const text = clean(reply.text, lastPrompt)
-        if (text !== undefined) await $.prompt.suggest({ text })
+        if (text === undefined) return
+        const shown = await $.prompt.suggest({ text })
+        // No ghost text possible here (an app draws the prompt box): use the band.
+        if (!shown.isShown && mine === generation) await update($, band, () => text)
       } catch (err) {
         $.ui.log(`autosuggest: ${String(err)}`, { to: 'debug' })
       } finally {
@@ -377,5 +398,33 @@ export const register: Register = on => {
   on('prompt.change', ($, e, next) => {
     forget()
     return next(e)
+  })
+
+  // ---- The band above the prompt (apps without ghost text) ---------------
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const text = await read($, band)
+    if (text === null || e.props.hasSurvey || e.props.isWorking) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>Suggested: {text}</Text>
+        <Box>
+          <Button
+            key="send"
+            label="Send"
+            onPress={async () => {
+              await update($, band, () => null)
+              // $.prompt.submit skips this plugin's own prompt.submit hook.
+              lastPrompt = text
+              generation += 1
+              await $.prompt.submit({ text })
+            }}
+          />
+          <Text> </Text>
+          <Button key="dismiss" label="Dismiss" onPress={() => update($, band, () => null)} />
+        </Box>
+      </Box>
+    )
   })
 }

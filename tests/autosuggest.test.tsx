@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+declare function setTimeout(fn: (value?: unknown) => void, ms: number): unknown
+
 import { clean, cleanContinuation, shouldComplete } from '../hooks/register'
 
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
@@ -8,16 +10,32 @@ const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, c
  * Stands in for the engine beneath the plugin: a store, the model fork, the
  * prompt box (suggest, paint, edits) and a clock that only moves when told.
  */
-function engine(on: any, reply: (prompt: string) => Promise<any> | any) {
+function engine(
+  on: any,
+  reply: (prompt: string) => Promise<any> | any,
+  opts: { ghost?: boolean; surfaces?: string[] } = {},
+) {
   const store = new Map<string, unknown>()
   const shown: string[] = []
   const paints: any[] = []
   const prompts: string[] = []
+  const submitted: string[] = []
   on('store.get', (_: any, e: any) => ({ value: store.get(e.key) }))
   on('store.set', (_: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
   on('command.register', () => ({ value: { command: 'autosuggest' } }))
   on('model.fork', async (_: any, e: any) => { prompts.push(e.prompt); return { value: await reply(e.prompt) } })
-  on('prompt.suggest', (_: any, e: any) => { shown.push(e.text); return { isShown: true } })
+  // ghost: false stands for a box Claude Code doesn't draw (the desktop app).
+  on('prompt.suggest', (_: any, e: any) => {
+    if (opts.ghost === false) return { isShown: false }
+    shown.push(e.text)
+    return { isShown: true }
+  })
+  on('session.surfaces', () => ({ value: opts.surfaces ?? [] }))
+  // What the engine draws where the plugin draws nothing of its own.
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
   on('prompt.paint', (_: any, e: any) => {
     paints.push(e)
     return { value: { isPainted: true, text: e.text ?? '', cursor: (e.text ?? '').length } }
@@ -29,10 +47,10 @@ function engine(on: any, reply: (prompt: string) => Promise<any> | any) {
   })
   on('prompt.change', () => undefined)
   on('turn.complete', (_: any, e: any) => ({ text: e.answer }))
-  on('prompt.submit', (_: any, e: any) => ({ text: e.text }))
+  on('prompt.submit', (_: any, e: any) => { submitted.push(e.text); return { text: e.text } })
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   const clock = mock.clock(on)
-  return { shown, paints, prompts, forks: () => prompts.length, store, clock }
+  return { shown, paints, prompts, submitted, forks: () => prompts.length, store, clock }
 }
 
 const answer = (extra: object = {}) =>
@@ -98,7 +116,7 @@ test('a suggestion that arrives after the next prompt was sent is dropped', asyn
 
 test('suggestions from other plugins still pass through', async ($, on) => {
   engine(on, () => answered('x'))
-  const r = await $.prompt.suggest({ text: 'engine guess' })
+  const r = await $.prompt.suggest({ text: 'engine guess' } as any)
   expect(r.isShown).toBe(true)
 })
 
@@ -390,4 +408,84 @@ test('clean: formats, generic acknowledgements and repeats', () => {
   expect(clean('SUGGESTION: continua')).toBe('continua')
   expect(clean('SUGGESTION: Faz o push.', 'faz o push')).toBeUndefined()
   expect(clean('SUGGESTION: faz o push e abre o PR', 'faz o push')).toBe('faz o push e abre o PR')
+})
+
+// ===========================================================================
+// Desktop app: the band above the prompt
+// ===========================================================================
+
+const BAND = {
+  plugin: 'autosuggest',
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+
+/** A desktop-app session: no terminal REPL, the app attached, no ghost text. */
+const desktop = async ($: any, on: any, reply: () => any) => {
+  const box = engine(on, reply, { ghost: false, surfaces: ['desktop'] })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: false } as any)
+  return box
+}
+
+test('in the desktop app the suggestion goes to the band above the prompt', async ($, on) => {
+  await desktop($, on, () => answered('SUGGESTION: roda os testes'))
+  await $.turn.complete(answer())
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /Suggested/ }))?.text).toBe('Suggested: roda os testes')
+  await ui.unmount()
+})
+
+test('Send submits the suggestion as the next prompt and clears the band', async ($, on) => {
+  const box = await desktop($, on, () => answered('SUGGESTION: roda os testes'))
+  await $.turn.complete(answer())
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  await ui.press({ key: 'send' })
+  expect(box.submitted).toEqual(['roda os testes'])
+  expect(await ui.find({ type: 'Text', text: /Suggested/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Dismiss clears the band without sending', async ($, on) => {
+  const box = await desktop($, on, () => answered('SUGGESTION: roda os testes'))
+  await $.turn.complete(answer())
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  await ui.press({ key: 'dismiss' })
+  expect(box.submitted).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /Suggested/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the band hides while Claude is working and after a new prompt', async ($, on) => {
+  await desktop($, on, () => answered('SUGGESTION: roda os testes'))
+  await $.turn.complete(answer())
+  await settle()
+  const busy = await $.ui.mount({ ...BAND, props: { ...BAND.props, isWorking: true }, surface: 'desktop' } as any)
+  expect(await busy.find({ type: 'Text', text: /Suggested/ })).toBeUndefined()
+  await busy.unmount()
+  await $.prompt.submit({ text: 'outra coisa' } as any)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /Suggested/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('in the terminal the ghost text is used and the band stays empty', async ($, on) => {
+  const box = engine(on, () => answered('SUGGESTION: roda os testes'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as any)
+  await $.turn.complete(answer())
+  await settle()
+  expect(box.shown).toEqual(['roda os testes'])
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' } as any)
+  expect(await ui.find({ type: 'Text', text: /Suggested/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('no terminal and no app attached: no request at all', async ($, on) => {
+  const box = engine(on, () => answered('SUGGESTION: x'), { ghost: false, surfaces: [] })
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false } as any)
+  await $.turn.complete(answer())
+  await settle()
+  expect(box.forks()).toBe(0)
 })
