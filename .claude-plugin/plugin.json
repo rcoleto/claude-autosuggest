@@ -1,13 +1,22 @@
 {
   "name": "autosuggest",
-  "version": "1.0.2",
-  "description": "Codex-style next-prompt suggestions: after each turn, a dim suggestion appears in the prompt box (Tab to accept)",
-  "license": "MIT",
+  "version": "1.1.0",
+  "description": "Ghost-text suggestions for Claude Code. After each reply, the empty prompt box shows the message you will most likely send next; while you type, pausing mid-sentence draws the rest of it in dim text. Tab accepts, typing dismisses. Configure with /autosuggest.",
   "author": {
     "name": "rcoleto",
     "url": "https://github.com/rcoleto"
   },
   "homepage": "https://github.com/rcoleto/claude-autosuggest",
   "repository": "https://github.com/rcoleto/claude-autosuggest",
+  "license": "MIT",
+  "keywords": [
+    "autocomplete",
+    "autosuggest",
+    "suggestions",
+    "ghost-text",
+    "prompt",
+    "completion",
+    "productivity"
+  ],
   "icon": "./.claude-plugin/icon.png"
 }
