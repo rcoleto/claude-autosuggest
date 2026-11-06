@@ -13,7 +13,7 @@ const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, c
 function engine(
   on: any,
   reply: (prompt: string) => Promise<any> | any,
-  opts: { ghost?: boolean; surfaces?: string[] } = {},
+  opts: { ghost?: boolean; surfaces?: string[]; paintRefused?: boolean } = {},
 ) {
   const store = new Map<string, unknown>()
   const shown: string[] = []
@@ -37,20 +37,26 @@ function engine(
     return <Text>engine</Text>
   })
   on('prompt.paint', (_: any, e: any) => {
+    if (opts.paintRefused) return { value: { isPainted: false, text: '', cursor: 0 } }
     paints.push(e)
     return { value: { isPainted: true, text: e.text ?? '', cursor: (e.text ?? '').length } }
   })
-  // The editor: apply the splice, caret after what went in.
+  // The editor: apply the splice, caret after what went in. `box` is what the
+  // prompt box holds now, for $.prompt.read.
+  const box = { text: '', cursor: 0 }
   on('prompt.edit', (_: any, e: any) => {
     const text = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
-    return { text, cursor: e.start + e.inputText.length }
+    box.text = text
+    box.cursor = e.start + e.inputText.length
+    return { text, cursor: box.cursor }
   })
+  on('prompt.read', () => ({ value: { ...box } }))
   on('prompt.change', () => undefined)
   on('turn.complete', (_: any, e: any) => ({ text: e.answer }))
   on('prompt.submit', (_: any, e: any) => { submitted.push(e.text); return { text: e.text } })
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   const clock = mock.clock(on)
-  return { shown, paints, prompts, submitted, forks: () => prompts.length, store, clock }
+  return { shown, paints, prompts, submitted, box, forks: () => prompts.length, store, clock }
 }
 
 const answer = (extra: object = {}) =>
@@ -488,4 +494,66 @@ test('no terminal and no app attached: no request at all', async ($, on) => {
   await $.turn.complete(answer())
   await settle()
   expect(box.forks()).toBe(0)
+})
+
+// ===========================================================================
+// /autosuggest debug
+// ===========================================================================
+
+const debug = async ($: any) => (await $.command.run({ command: 'autosuggest', args: 'debug' } as any)).text as string
+
+test('debug shows every step of a successful inline completion', async ($, on) => {
+  const box = engine(on, () => answered(' arquivo de login'))
+  await type($, '', 'Corrige o bug no')
+  await box.clock.advance(2000)
+  await settle()
+  const out = await debug($)
+  expect(out).toContain('edit (paste/burst): box "Corrige o bug no", cursor 16/16')
+  expect(out).toContain('waiting 2s for a pause')
+  expect(out).toContain('pause reached')
+  expect(out).toContain('asking the model to continue "Corrige o bug no"')
+  expect(out).toContain('model replied " arquivo de login"')
+  expect(out).toContain('painted " arquivo de login" after the draft')
+})
+
+test('debug names why a draft was skipped', async ($, on) => {
+  engine(on, () => answered(' x'))
+  await type($, '', 'Corrige o bug no login.')
+  expect(await debug($)).toContain('skipped: draft ends with a period')
+})
+
+test('debug says when Claude Code refuses to paint', async ($, on) => {
+  const box = engine(on, () => answered(' arquivo'), { paintRefused: true })
+  await type($, '', 'Corrige o bug no')
+  await box.clock.advance(2000)
+  await settle()
+  expect(await debug($)).toContain('not painted: Claude Code refused')
+})
+
+test('debug says when the model gives no text', async ($, on) => {
+  const box = engine(on, () => ({ isAnswered: false, reason: 'nothing-to-fork', usage: USAGE }))
+  await type($, '', 'Corrige o bug no')
+  await box.clock.advance(2000)
+  await settle()
+  expect(await debug($)).toContain('model gave no text: nothing-to-fork')
+})
+
+test('debug with nothing yet says no edit reached the plugin', async ($, on) => {
+  engine(on, () => answered(' x'))
+  expect(await debug($)).toContain('nothing yet: no edit has reached the plugin')
+})
+
+test('the box is read before painting, and a changed box drops the completion', async ($, on) => {
+  let release: (v: unknown) => void = () => {}
+  const box = engine(on, () => new Promise(r => { release = r }))
+  await type($, '', 'Corrige o bug no')
+  await box.clock.advance(2000)
+  await settle()
+  // Something outside this plugin's edits changed the box meanwhile.
+  box.box.text = 'outra coisa'
+  box.box.cursor = 11
+  release(answered(' arquivo'))
+  await settle()
+  expect(box.paints).toEqual([])
+  expect(await debug($)).toContain('dropped: the box now reads "outra coisa"')
 })

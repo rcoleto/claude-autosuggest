@@ -110,6 +110,7 @@ away, so you never see one meant for an older version of your text.
 | `/autosuggest next on` / `off` | Only the next-prompt suggestion |
 | `/autosuggest inline on` / `off` | Only the inline completion |
 | `/autosuggest delay <seconds>` | How long you have to stop typing before a completion is requested. Between 0.5 and 10, default 2 |
+| `/autosuggest debug` | Shows the last steps of inline completion, for when it doesn't appear |
 | `/autosuggest help` | Lists these commands |
 
 Settings are saved and carry over to new sessions. Turning off the next-prompt suggestion brings
@@ -186,8 +187,11 @@ clear follow-up, there's intentionally no suggestion.
 a reply, while the prompt box is empty of your own message. Check `/autosuggest` from a terminal
 session to make sure the next-prompt suggestion is on.
 
-**Inline completion never appears.** Check that the cursor is at the end, the draft doesn't end
-with a period, and you waited longer than the delay (`/autosuggest` shows it). It only works in
+**Inline completion never appears.** Type a draft, wait a few seconds, then send
+`/autosuggest debug`. It lists what happened, step by step: whether your typing reached the
+plugin, why a draft was skipped, what the model answered, and whether Claude Code drew it. Common
+reasons: the cursor isn't at the end, the draft ends with a period, or you didn't wait longer than
+the delay. It only works in
 Claude Code running in your own terminal: not in a cloud session viewed from an app, and not in
 screen-reader mode.
 
@@ -228,6 +232,10 @@ claude --plugin-dir .
 ```
 
 ## Changelog
+
+**1.3.1**: `/autosuggest debug` shows each step of the last inline completion attempts. The
+plugin now reads the prompt box before drawing a completion, so it only draws over the draft the
+completion was made for.
 
 **1.3.0**: Desktop app support. Where Claude Code can't show ghost text because the app draws
 the prompt box, the next-prompt suggestion appears in a band above the box with Send and Dismiss.

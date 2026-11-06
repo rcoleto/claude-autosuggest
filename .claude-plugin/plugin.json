@@ -1,6 +1,6 @@
 {
   "name": "autosuggest",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Ghost-text suggestions for Claude Code. After each reply, the empty prompt box shows the message you will most likely send next (in the desktop app, a band above the box with a Send button); in the terminal, pausing mid-sentence draws the rest of it in dim text. Tab accepts, typing dismisses. Configure with /autosuggest.",
   "author": {
     "name": "rcoleto",

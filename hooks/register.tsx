@@ -148,13 +148,17 @@ export function cleanContinuation(raw: string, draft: string): string | undefine
  * Whether a draft is worth completing: long enough, caret at the end, not a
  * finished sentence (ends with "."), not a slash command or a shell line.
  */
-export function shouldComplete(text: string, cursor: number): boolean {
-  if (cursor !== text.length) return false
+export function whyNotComplete(text: string, cursor: number): string | undefined {
+  if (cursor !== text.length) return 'cursor is not at the end'
   const trimmed = text.trim()
-  if (trimmed.length < MIN_DRAFT_CHARS) return false
-  if (trimmed.startsWith('/') || trimmed.startsWith('!')) return false
-  if (text.trimEnd().endsWith('.')) return false
-  return true
+  if (trimmed.length < MIN_DRAFT_CHARS) return `draft shorter than ${MIN_DRAFT_CHARS} characters`
+  if (trimmed.startsWith('/') || trimmed.startsWith('!')) return 'slash command or shell line'
+  if (text.trimEnd().endsWith('.')) return 'draft ends with a period'
+  return undefined
+}
+
+export function shouldComplete(text: string, cursor: number): boolean {
+  return whyNotComplete(text, cursor) === undefined
 }
 
 export function ghostDecoration(at: number, ghost: string): PromptDecoration {
@@ -191,6 +195,7 @@ async function statusText($: EngineInterface): Promise<string> {
 
 const USAGE = `Usage:
   /autosuggest                 show what's on
+  /autosuggest debug           what happened on the last inline completion attempts
   /autosuggest on | off        turn everything on or off
   /autosuggest next on | off   next-prompt suggestion after each reply
   /autosuggest inline on | off completion of what you're typing
@@ -208,22 +213,61 @@ type InlineState = {
   draftVersion: number
   ghost: Ghost | undefined
   isForking: boolean
+  /** The last steps of inline completion, for /autosuggest debug. */
+  log: string[]
+}
+
+const LOG_LINES = 30
+
+/** Shortens a draft for the debug log: its last 40 characters, quoted. */
+const tail = (text: string) => JSON.stringify(text.length > 40 ? `…${text.slice(-40)}` : text)
+
+function note(st: InlineState, line: string) {
+  const time = new Date().toISOString().slice(11, 23)
+  st.log.push(`${time}  ${line}`)
+  if (st.log.length > LOG_LINES) st.log.splice(0, st.log.length - LOG_LINES)
 }
 
 async function requestInline($: EngineInterface, st: InlineState, draft: string, version: number) {
-  if (st.isForking) return
+  if (st.isForking) {
+    note(st, 'skipped: another completion is still being generated')
+    return
+  }
   st.isForking = true
   try {
+    note(st, `asking the model to continue ${tail(draft)}`)
     const reply = await $.model.fork({ prompt: askInline(draft) })
-    if (version !== st.draftVersion || !reply.isAnswered) return
+    if (!reply.isAnswered) {
+      note(st, `model gave no text: ${reply.reason}`)
+      return
+    }
+    note(st, `model replied ${JSON.stringify(reply.text.slice(0, 120))}`)
+    if (version !== st.draftVersion) {
+      note(st, 'dropped: the draft changed while the model was answering')
+      return
+    }
     const text = cleanContinuation(reply.text, draft)
-    if (text === undefined) return
+    if (text === undefined) {
+      note(st, 'dropped: nothing left after cleaning (NONE, blank or only the draft)')
+      return
+    }
+    // Read the box first: a plugin that reads it is handed the real draft, and
+    // it also proves the draft is still the one the completion was made for.
+    const box = await $.prompt.read()
+    if (box.text !== draft || box.cursor !== draft.length) {
+      note(st, `dropped: the box now reads ${tail(box.text)} (cursor ${box.cursor})`)
+      return
+    }
     const painted = await $.prompt.paint({
       text: draft,
       decorations: [ghostDecoration(draft.length, text)],
     })
+    note(st, painted.isPainted
+      ? `painted ${JSON.stringify(text)} after the draft`
+      : `not painted: Claude Code refused (box reads ${tail(painted.text)})`)
     if (painted.isPainted && version === st.draftVersion) st.ghost = { draft, text }
   } catch (err) {
+    note(st, `error: ${String(err)}`)
     $.ui.log(`autosuggest: ${String(err)}`, { to: 'debug' })
   } finally {
     st.isForking = false
@@ -241,7 +285,7 @@ export const register: Register = on => {
   // The user's last message, so the suggestion never just repeats it.
   let lastPrompt: string | undefined
 
-  const st: InlineState = { draftVersion: 0, ghost: undefined, isForking: false }
+  const st: InlineState = { draftVersion: 0, ghost: undefined, isForking: false, log: [] }
   let idleTimer: { cancel: () => void } | undefined
 
   const stopIdle = () => {
@@ -273,6 +317,18 @@ export const register: Register = on => {
 
     if (first === undefined || first === 'status') return { text: await statusText($) }
     if (first === 'help') return { text: USAGE }
+    if (first === 'debug') {
+      const surfaces = await $.session.surfaces()
+      return {
+        text: [
+          await statusText($),
+          `Terminal prompt box: ${isInteractive ? 'yes' : 'no'}; surfaces: ${surfaces.join(', ') || 'none'}`,
+          '',
+          'Last inline completion steps (oldest first):',
+          ...(st.log.length > 0 ? st.log : ['  (nothing yet: no edit has reached the plugin)']),
+        ].join('\n'),
+      }
+    }
 
     if ((first === 'on' || first === 'off') && second === undefined) {
       await $.store.set(ENABLED_KEY, first === 'on')
@@ -362,6 +418,7 @@ export const register: Register = on => {
     if (st.ghost !== undefined && st.ghost.draft === e.text && atEnd && plain &&
         (e.key?.key === 'tab' || e.key?.key === 'right')) {
       const text = e.text + st.ghost.text
+      note(st, `accepted with ${e.key?.key}`)
       forget()
       return { text, cursor: text.length }
     }
@@ -383,13 +440,30 @@ export const register: Register = on => {
       }
     }
 
-    if (!isInteractive || !shouldComplete(r.text, r.cursor)) return r
-    if (!(await isOn($, INLINE_KEY))) return r
+    const keyName = e.key?.key ?? (e.inputText.length > 1 ? 'paste/burst' : 'no key')
+    note(st, `edit (${keyName}): box ${tail(r.text)}, cursor ${r.cursor}/${r.text.length}`)
+    if (!isInteractive) {
+      note(st, 'skipped: no terminal prompt box in this session')
+      return r
+    }
+    const why = whyNotComplete(r.text, r.cursor)
+    if (why !== undefined) {
+      note(st, `skipped: ${why}`)
+      return r
+    }
+    if (!(await isOn($, INLINE_KEY))) {
+      note(st, 'skipped: inline completion is off')
+      return r
+    }
 
     const version = st.draftVersion
     const draft = r.text
-    idleTimer = $.clock.after(await delayMs($), () => {
-      if (version === st.draftVersion) void requestInline($, st, draft, version)
+    const wait = await delayMs($)
+    note(st, `waiting ${wait / 1000}s for a pause`)
+    idleTimer = $.clock.after(wait, () => {
+      if (version !== st.draftVersion) return
+      note(st, 'pause reached')
+      void requestInline($, st, draft, version)
     })
     return r
   })
