@@ -1,0 +1,15 @@
+{
+  "name": "rcoleto-autosuggest",
+  "description": "Claude Code plugins by rcoleto",
+  "owner": {
+    "name": "rcoleto",
+    "url": "https://github.com/rcoleto"
+  },
+  "plugins": [
+    {
+      "name": "autosuggest",
+      "source": "./",
+      "description": "Codex-style next-prompt suggestions: after each turn, a dim suggestion appears in the prompt box (Tab to accept)"
+    }
+  ]
+}

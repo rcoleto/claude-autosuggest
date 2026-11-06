@@ -1,0 +1,12 @@
+{
+  "name": "autosuggest",
+  "version": "1.0.0",
+  "description": "Codex-style next-prompt suggestions: after each turn, a dim suggestion appears in the prompt box (Tab to accept)",
+  "license": "MIT",
+  "author": {
+    "name": "rcoleto",
+    "url": "https://github.com/rcoleto"
+  },
+  "homepage": "https://github.com/rcoleto/claude-autosuggest",
+  "repository": "https://github.com/rcoleto/claude-autosuggest"
+}
