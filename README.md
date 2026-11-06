@@ -99,12 +99,25 @@ Claude Code already sent. The API reads that conversation from the prompt cache,
 doesn't pay full price for it on every call. The extra request gets no tools and is told to
 answer immediately, without extended thinking.
 
-For the next-prompt suggestion, the request runs once at the end of each turn and asks for the
-single message you're most likely to send, under 30 words. The plugin strips quotes, labels such
-as `User:` and markdown from the reply, then passes it to the prompt box.
+For the next-prompt suggestion, the request runs once at the end of each turn. It asks the model
+to pick the most likely next message using these rules, in order:
+
+1. If Claude's last reply asked you something or offered options, suggest the answer you'd most
+   likely give, such as approving the option Claude recommended.
+2. If something failed or is still unverified, suggest what you'd most likely do about it.
+3. If Claude proposed a next step, suggest asking for it.
+4. Otherwise, suggest the natural next task.
+
+The model first writes a short line saying which rule it used, then the suggestion. That small
+step of reasoning makes the choice better, and you never see that line. The suggestion is written
+in your style, which the model reads from your earlier messages: language, length, casing,
+punctuation and how formal you are. The plugin then drops suggestions that only say "ok" or
+"thanks" and ones that repeat the message you just sent, strips quotes, labels and markdown, and
+passes the rest to the prompt box.
 
 For inline completion, every edit restarts a timer. When the timer runs out, the request carries
-your draft and asks only for the text that comes after it. The plugin removes any part of the
+your draft and asks only for the text that comes after it, in your style, preferring the real
+names of files, functions and commands from the conversation over generic words. The plugin removes any part of the
 draft the model repeated and keeps the leading space only when the model is starting a new word.
 It then draws the text after your cursor with the terminal's faint style. That text is a
 decoration and never becomes part of your draft until you accept it.
@@ -124,10 +137,12 @@ uses. Nothing is sent anywhere else, and the plugin doesn't store drafts.
 
 ## Known limitations
 
-- The inline completion is drawn by the terminal's prompt box. Claude Code doesn't draw these
-  decorations in sessions shown on a remote host (for example a cloud session followed from the
-  web or mobile app) or in screen-reader mode, so you won't see inline completions there. The
-  next-prompt suggestion isn't affected.
+- Both features need Claude Code's own prompt box, which you get when you run `claude` in a
+  terminal on your machine. In a cloud session followed from the desktop, web or mobile app, the
+  app has its own text box and only sends your message when you press Enter. Claude Code never
+  sees what you type there, so inline completion can't work, and Claude Code treats the session
+  as having no prompt box, so the plugin skips the next-prompt suggestion too.
+- Claude Code also doesn't draw the inline completion in screen-reader mode.
 - "Dim" is the terminal's faint text style. How faint it looks depends on your terminal and
   theme. Terminals can't make text truly transparent.
 - While the next-prompt suggestion is on, Claude Code's built-in suggestion is hidden so the two
@@ -140,8 +155,9 @@ uses. Nothing is sent anywhere else, and the plugin doesn't store drafts.
 clear follow-up, there's intentionally no suggestion.
 
 **Inline completion never appears.** Check that the cursor is at the end, the draft doesn't end
-with a period, and you waited longer than the delay (`/autosuggest` shows it). In a remote or
-screen-reader session the decoration isn't drawn at all.
+with a period, and you waited longer than the delay (`/autosuggest` shows it). It only works in
+Claude Code running in your own terminal: not in a cloud session viewed from an app, and not in
+screen-reader mode.
 
 **Tab doesn't accept the completion.** Use → with the cursor at the end of the draft.
 
@@ -178,6 +194,12 @@ claude --plugin-dir .
 ```
 
 ## Changelog
+
+**1.2.0**: Smarter suggestions. The next-prompt suggestion answers Claude's open questions
+first, follows up on failures and proposed steps, and copies your writing style. It skips bare
+"ok"/"thanks" and repeats of your last message. Inline completion copies your style and prefers
+names from the conversation. The README now explains that both features need Claude Code running
+in your own terminal.
 
 **1.1.0**: Inline completion of half-typed drafts after a pause, with Tab or → to accept and
 partial acceptance by typing. New `/autosuggest next`, `inline`, `delay` and `help` commands.

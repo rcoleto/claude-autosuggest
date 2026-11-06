@@ -29,14 +29,34 @@ const MIN_DRAFT_CHARS = 6
 // Both ask for haste in the prompt instead of passing `effort`: a fork that
 // names no effort reuses the main thread's prompt cache on every model.
 
+/**
+ * How the user writes, read from their own earlier messages above: the model
+ * copies it so a suggestion reads like something they would have typed.
+ */
+const STYLE = `Copy the USER's own writing style from their earlier messages in this
+conversation: their language (if they write in Portuguese, write in Portuguese),
+their usual length, casing, punctuation and how formal they are. If they write
+short lowercase messages without a final period, do the same.`
+
 const ASK_NEXT = `[autosuggest] You have no tools for this message. Do not continue the
-work. Answer straight away, without thinking it over.
-Predict the single next message the USER is most likely to type to you now,
-given everything above. Write it exactly as the user would: first person,
-imperative or question, in the same language the user has been writing in,
-one sentence, under 30 words, concrete (name the files, findings or next step
-from this conversation). No quotes, no labels, no preamble, no explanation.
-If there is no clear useful next step, reply with exactly: NONE`
+work and do not answer as the assistant. Be quick.
+Predict the single next message the USER is most likely to send you now.
+Work it out in this order and use the first that applies:
+1. Your last reply asked the user a question or offered options: write the
+   answer they would most likely give (e.g. approving the option you
+   recommended, or choosing between the options).
+2. Your last reply said something failed, is unverified, or needs the user to
+   check something: write what they would most likely do or ask about it.
+3. Your last reply proposed a next step: write the user asking for it.
+4. Otherwise: the natural next task in what they are building.
+${STYLE}
+Be concrete: name the files, commands, options or findings from this
+conversation. Never suggest something already done, never a bare "ok" or
+"thanks", never repeat the user's previous message.
+Reply in exactly two lines:
+WHY: <at most 12 words on which rule applied>
+SUGGESTION: <the message, at most 25 words>
+If no suggestion would really help, reply with exactly: SUGGESTION: NONE`
 
 function askInline(draft: string): string {
   return `[autosuggest] You have no tools for this message. Do not answer the draft
@@ -47,10 +67,13 @@ draft is between the markers below, exactly as typed:
 ${draft}
 DRAFT>>>
 Reply with ONLY the text that should come right after the draft's last
-character to finish their thought: same language and tone, at most 15 words,
-ending at a natural stopping point. Start with a space if the next word is a new
-word; start without one if the draft stops in the middle of a word. Never repeat
-the draft. No quotes, no labels, no explanation.
+character to finish their thought, at most 15 words, ending at a natural
+stopping point. Use what this conversation is about: prefer the real names of
+files, functions, commands and options mentioned above over generic words.
+${STYLE}
+Start with a space if the next word is a new word; start without one if the
+draft stops in the middle of a word. Never repeat the draft. No quotes, no
+labels, no explanation.
 If you can't tell how they'd continue, reply with exactly: NONE`
 }
 
@@ -62,10 +85,24 @@ const LABEL = /^(user|you|me|next( prompt| message)?|suggestion|prompt|continuat
 const WRAP = /^[\s"'`“”*_]+|[\s"'`“”*_]+$/g
 const QUOTES = /^["'`“”]+|["'`“”]+$/g
 
-export function clean(raw: string): string | undefined {
-  let text = raw.split('\n').find(line => line.trim() !== '')?.trim() ?? ''
+/** Replies too generic to be worth a suggestion. */
+const GENERIC = /^(ok(ay)?|ok,? (obrigad[oa]|valeu|thanks)|obrigad[oa]|valeu|thanks|thank you|perfeito|perfect|great|nice|show|beleza|legal)[\s.!]*$/i
+
+const normalize = (s: string) => s.toLowerCase().replace(/[\s.!?,;:]+/g, ' ').trim()
+
+/**
+ * Picks the suggestion out of the model's reply (the `SUGGESTION:` line when
+ * there is one, else the first line), cleans it, and drops what isn't worth
+ * showing: NONE, a bare "ok"/"thanks", or a repeat of `previous`.
+ */
+export function clean(raw: string, previous?: string): string | undefined {
+  const lines = raw.split('\n').map(line => line.trim()).filter(line => line !== '')
+  const tagged = lines.find(line => /^\**suggestion\**\s*:/i.test(line.replace(WRAP, '')))
+  let text = tagged ?? lines.find(line => !/^\**why\**\s*:/i.test(line.replace(WRAP, ''))) ?? ''
   text = text.replace(WRAP, '').trim().replace(LABEL, '').replace(WRAP, '').trim()
   if (text === '' || /^none\.?$/i.test(text)) return undefined
+  if (GENERIC.test(text)) return undefined
+  if (previous !== undefined && normalize(previous) === normalize(text)) return undefined
   return text.length > MAX_NEXT_CHARS ? `${text.slice(0, MAX_NEXT_CHARS - 1)}…` : text
 }
 
@@ -191,6 +228,8 @@ export const register: Register = on => {
   let isInteractive = true
   // Guards against a fork's own completion re-entering turn.complete.
   let isForkingNext = false
+  // The user's last message, so the suggestion never just repeats it.
+  let lastPrompt: string | undefined
 
   const st: InlineState = { draftVersion: 0, ghost: undefined, isForking: false }
   let idleTimer: { cancel: () => void } | undefined
@@ -253,6 +292,7 @@ export const register: Register = on => {
   // ---- Next-prompt suggestion (empty box, after a reply) -----------------
 
   on('prompt.submit', ($, e, next) => {
+    lastPrompt = e.text
     generation += 1
     forget()
     return next(e)
@@ -280,7 +320,7 @@ export const register: Register = on => {
       try {
         const reply = await $.model.fork({ prompt: ASK_NEXT })
         if (mine !== generation || !reply.isAnswered) return
-        const text = clean(reply.text)
+        const text = clean(reply.text, lastPrompt)
         if (text !== undefined) await $.prompt.suggest({ text })
       } catch (err) {
         $.ui.log(`autosuggest: ${String(err)}`, { to: 'debug' })

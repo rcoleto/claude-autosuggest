@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { cleanContinuation, shouldComplete } from '../hooks/register'
+import { clean, cleanContinuation, shouldComplete } from '../hooks/register'
 
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
@@ -339,4 +339,55 @@ test('shouldComplete', () => {
   expect(shouldComplete('Pronto? E agora', 15)).toBe(true)
   expect(shouldComplete('/review', 7)).toBe(false)
   expect(shouldComplete('ok', 2)).toBe(false)
+})
+
+// ===========================================================================
+// Smarter suggestions
+// ===========================================================================
+
+test('the SUGGESTION line is used and the WHY line is never shown', async ($, on) => {
+  const box = engine(on, () => answered('WHY: rule 1, you offered to push\nSUGGESTION: sim, pode fazer o push'))
+  await $.turn.complete(answer())
+  await settle()
+  expect(box.shown).toEqual(['sim, pode fazer o push'])
+})
+
+test('the next-prompt request asks for the user\'s own style and answers to open questions', async ($, on) => {
+  const box = engine(on, () => answered('SUGGESTION: NONE'))
+  await $.turn.complete(answer())
+  await settle()
+  expect(box.prompts[0]).toContain("Copy the USER's own writing style")
+  expect(box.prompts[0]).toContain('asked the user a question or offered options')
+  expect(box.shown).toEqual([])
+})
+
+test('a suggestion that repeats the last message sent is dropped', async ($, on) => {
+  const box = engine(on, () => answered('SUGGESTION: Faz o push!'))
+  await $.prompt.submit({ text: 'faz o push' } as any)
+  await $.turn.complete(answer())
+  await settle()
+  expect(box.shown).toEqual([])
+})
+
+test('the inline request carries the style rule too', async ($, on) => {
+  const box = engine(on, () => answered(' arquivo de login'))
+  await type($, '', 'Corrige o bug no')
+  await box.clock.advance(2000)
+  await settle()
+  expect(box.prompts[0]).toContain("Copy the USER's own writing style")
+  expect(box.prompts[0]).toContain('real names of')
+})
+
+test('clean: formats, generic acknowledgements and repeats', () => {
+  expect(clean('WHY: x\nSUGGESTION: roda os testes')).toBe('roda os testes')
+  expect(clean('**SUGGESTION:** "roda os testes"')).toBe('roda os testes')
+  expect(clean('SUGGESTION: NONE')).toBeUndefined()
+  expect(clean('WHY: nothing left')).toBeUndefined()
+  expect(clean('roda os testes')).toBe('roda os testes')
+  expect(clean('SUGGESTION: ok, obrigado!')).toBeUndefined()
+  expect(clean('SUGGESTION: valeu')).toBeUndefined()
+  expect(clean('SUGGESTION: sim')).toBe('sim')
+  expect(clean('SUGGESTION: continua')).toBe('continua')
+  expect(clean('SUGGESTION: Faz o push.', 'faz o push')).toBeUndefined()
+  expect(clean('SUGGESTION: faz o push e abre o PR', 'faz o push')).toBe('faz o push e abre o PR')
 })
